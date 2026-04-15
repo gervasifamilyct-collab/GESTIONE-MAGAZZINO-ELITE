@@ -26,25 +26,13 @@ def get_connection():
 conn = get_connection()
 cursor = conn.cursor()
 
-# --- GESTIONE STATO ---
-if 'form_iteration' not in st.session_state:
-    st.session_state.form_iteration = 0
-if 'edit_data' not in st.session_state:
-    st.session_state.edit_data = None
+# --- LOGICA DI RESET ---
+if 'reset_trigger' not in st.session_state:
+    st.session_state.reset_trigger = 0
 
-def reset_totale():
-    st.session_state.edit_data = None
-    st.session_state.form_iteration += 1
-
-def carica_prodotto(codice):
-    cursor.execute("SELECT * FROM prodotti WHERE codice=?", (codice,))
-    res = cursor.fetchone()
-    if res:
-        st.session_state.edit_data = {
-            "codice": res[0], "nome": res[1], "fornitore": res[2],
-            "acquisto": res[3], "rivendita": res[4], "pubblico": res[6], "qty": res[7]
-        }
-        st.session_state.form_iteration += 1
+def reset_campi():
+    st.session_state.reset_trigger += 1
+    st.rerun()
 
 # --- FUNZIONE PDF ---
 def genera_pdf(titolo, campi_scelti):
@@ -70,82 +58,88 @@ def genera_pdf(titolo, campi_scelti):
     c.save(); buffer.seek(0)
     return buffer
 
-# --- SIDEBAR (SCHEDA PRODOTTO) ---
-st.sidebar.header("🛡️ SCHEDA PRODOTTO")
-iter = st.session_state.form_iteration
-d = st.session_state.edit_data if st.session_state.edit_data else {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
+# --- AREA PRINCIPALE (CARICAMENTO DATI) ---
+st.header("🔍 Magazzino Elite Estetica")
+search = st.text_input("Filtra per nome o codice...")
 
-with st.sidebar:
-    cod = st.text_input("Codice Prodotto", value=d["codice"], disabled=(st.session_state.edit_data is not None), key=f"c_{iter}")
-    nom = st.text_input("Nome/Descrizione", value=d["nome"], key=f"n_{iter}")
-    forn = st.text_input("Fornitore", value=d["fornitore"], key=f"f_{iter}")
-    
-    col1, col2 = st.columns(2)
-    acq = col1.number_input("Acquisto (€)", value=float(d["acquisto"]), step=0.01, key=f"a_{iter}")
-    riv = col2.number_input("Rivendita (€)", value=float(d["rivendita"]), step=0.01, key=f"r_{iter}")
-    pub = col1.number_input("Pubblico (€)", value=float(d["pubblico"]), step=0.01, key=f"p_{iter}")
-    qta = col2.number_input("Q.tà", value=int(d["qty"]), step=1, key=f"q_{iter}")
-
-    st.markdown("---")
-    
-    if st.button("➕ Inserisci Nuovo", use_container_width=True, type="primary"):
-        if cod and nom:
-            iva = round(riv * 1.22, 2)
-            try:
-                cursor.execute('INSERT INTO prodotti VALUES (?,?,?,?,?,?,?,?)', (cod, nom, forn, acq, riv, iva, pub, qta))
-                conn.commit(); st.success("Inserito!"); reset_totale(); st.rerun()
-            except: st.error("Errore: Codice già presente!")
-
-    if st.button("💾 Salva Modifiche", use_container_width=True, disabled=(st.session_state.edit_data is None)):
-        iva = round(riv * 1.22, 2)
-        cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
-                       (nom, forn, acq, riv, iva, pub, qta, d["codice"]))
-        conn.commit(); st.info("Modificato!"); reset_totale(); st.rerun()
-
-    if st.button("🗑️ Elimina Prodotto", use_container_width=True, disabled=(st.session_state.edit_data is None)):
-        cursor.execute("DELETE FROM prodotti WHERE codice=?", (d["codice"],))
-        conn.commit(); st.warning("Eliminato!"); reset_totale(); st.rerun()
-
-    if st.button("🧹 Svuota Campi", use_container_width=True):
-        reset_totale(); st.rerun()
-
-# --- AREA PRINCIPALE (ELENCO PRODOTTI CLICCABILE) ---
-st.header("🔍 Elenco Magazzino")
-st.write("Clicca sulla riga del prodotto per caricarlo e modificarlo:")
-
-search = st.text_input("Cerca per nome o codice...")
 query = "SELECT * FROM prodotti"
 if search:
     query += f" WHERE codice LIKE '%{search}%' OR nome LIKE '%{search}%'"
 df = pd.read_sql_query(query, conn)
 
-# Intestazione della Tabella "Finta"
-st.markdown("""
-<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; font-weight: bold; display: flex;'>
-    <div style='flex: 1;'>Codice</div>
-    <div style='flex: 2;'>Nome Prodotto</div>
-    <div style='flex: 1;'>Fornitore</div>
-    <div style='flex: 0.5;'>Q.tà</div>
-    <div style='flex: 1;'>Pubblico</div>
-</div>
-""", unsafe_allow_html=True)
+# Rinominiamo per la tabella
+df_display = df.rename(columns={
+    'codice': 'Codice', 'nome': 'Nome', 'fornitore': 'Fornitore',
+    'prezzo_acquisto': 'Acquisto', 'prezzo_rivendita': 'Rivendita',
+    'prezzo_rivendita_iva': 'Riv+IVA', 'prezzo_pubblico': 'Pubblico', 'quantita': 'Q.tà'
+})
 
-# Generazione delle righe cliccabili
-for index, row in df.iterrows():
-    label = f"{row['codice']} | {row['nome'][:30]}... | {row['quantita']} pz | {row['prezzo_pubblico']}€"
-    # Creiamo un pulsante che sembra una riga di tabella
-    if st.button(f"📄 {row['codice']} ➔ {row['nome']}", key=f"row_{row['codice']}", use_container_width=True):
-        carica_prodotto(row['codice'])
-        st.rerun()
+# TABELLA CLICCABILE
+selected_rows = st.dataframe(
+    df_display,
+    use_container_width=True,
+    hide_index=True,
+    on_select="rerun", # Questo permette di cliccare la riga
+    selection_mode="single-row"
+)
+
+# Recuperiamo i dati della riga selezionata
+selected_data = None
+if len(selected_rows.selection.rows) > 0:
+    row_idx = selected_rows.selection.rows[0]
+    selected_data = df.iloc[row_idx]
+
+# --- SIDEBAR (SCHEDA PRODOTTO) ---
+st.sidebar.header("🛡️ SCHEDA PRODOTTO")
+key_suf = st.session_state.reset_trigger
+
+# Se abbiamo selezionato una riga, usiamo quei dati, altrimenti campi vuoti
+d = selected_data if selected_data is not None else {"codice": "", "nome": "", "fornitore": "", "prezzo_acquisto": 0.0, "prezzo_rivendita": 0.0, "prezzo_pubblico": 0.0, "quantita": 0}
+
+with st.sidebar:
+    cod = st.text_input("Codice Prodotto", value=str(d["codice"]), key=f"c_{key_suf}")
+    nom = st.text_input("Nome/Descrizione", value=str(d["nome"]), key=f"n_{key_suf}")
+    forn = st.text_input("Fornitore", value=str(d["fornitore"]), key=f"f_{key_suf}")
+    
+    c1, c2 = st.columns(2)
+    acq = c1.number_input("Acquisto (€)", value=float(d["prezzo_acquisto"]), step=0.01, key=f"a_{key_suf}")
+    riv = c2.number_input("Rivendita (€)", value=float(d["prezzo_rivendita"]), step=0.01, key=f"r_{key_suf}")
+    pub = c1.number_input("Pubblico (€)", value=float(d["prezzo_pubblico"]), step=0.01, key=f"p_{key_suf}")
+    qta = c2.number_input("Q.tà", value=int(d["quantita"]), step=1, key=f"q_{key_suf}")
+
+    st.markdown("---")
+    
+    col_btn1, col_btn2 = st.columns(2)
+    
+    if col_btn1.button("➕ Inserisci", use_container_width=True, type="primary"):
+        if cod and nom:
+            iva = round(riv * 1.22, 2)
+            try:
+                cursor.execute('INSERT INTO prodotti VALUES (?,?,?,?,?,?,?,?)', (cod, nom, forn, acq, riv, iva, pub, qta))
+                conn.commit(); st.success("Inserito!"); reset_campi()
+            except: st.error("Errore: Codice presente!")
+
+    if col_btn2.button("💾 Modifica", use_container_width=True):
+        iva = round(riv * 1.22, 2)
+        cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
+                       (nom, forn, acq, riv, iva, pub, qta, cod))
+        conn.commit(); st.info("Modificato!"); reset_campi()
+
+    if col_btn1.button("🗑️ Elimina", use_container_width=True):
+        cursor.execute("DELETE FROM prodotti WHERE codice=?", (cod,))
+        conn.commit(); st.warning("Eliminato!"); reset_campi()
+
+    if col_btn2.button("🧹 Svuota", use_container_width=True):
+        reset_campi()
 
 # --- PDF ---
 st.divider()
 st.header("🖨️ Stampa PDF")
-c1, c2 = st.columns([2, 1])
-with c1:
-    tit = st.text_input("Titolo Report", "LISTINO ELITE")
+cp1, cp2 = st.columns([2, 1])
+with cp1:
+    tit = st.text_input("Titolo Report", "LISTINO ELITE", key="t_pdf")
     campi = st.multiselect("Colonne", ["Codice", "Nome", "Fornitore", "P. Acquisto", "P. Rivendita", "P. Pubblico", "Quantità"], default=["Codice", "Nome", "P. Pubblico"])
-with c2:
+with cp2:
     st.write("###")
     if st.button("Genera PDF", use_container_width=True):
         f = genera_pdf(tit, campi)
