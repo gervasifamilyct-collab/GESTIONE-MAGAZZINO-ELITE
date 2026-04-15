@@ -5,10 +5,10 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import io
 
-# --- CONFIGURAZIONE ---
+# --- 1. CONFIGURAZIONE ---
 st.set_page_config(page_title="Elite Estetica - Gestionale", layout="wide")
 
-# --- DATABASE ---
+# --- 2. DATABASE ---
 @st.cache_resource
 def get_connection():
     conn = sqlite3.connect("magazzino.db", check_same_thread=False)
@@ -26,19 +26,29 @@ def get_connection():
 conn = get_connection()
 cursor = conn.cursor()
 
-# --- GESTIONE STATO ---
+# --- 3. GESTIONE STATO ---
 if 'form_iteration' not in st.session_state:
     st.session_state.form_iteration = 0
-if 'editing_now' not in st.session_state:
-    st.session_state.editing_now = None # Memorizza il codice del prodotto che stiamo modificando
+if 'edit_data' not in st.session_state:
+    st.session_state.edit_data = None
 
-# Funzione per svuotare tutto e resettare i widget
+# Funzione per svuotare tutto (Reset)
 def reset_totale():
-    st.session_state.editing_now = None
+    st.session_state.edit_data = None
     st.session_state.form_iteration += 1
-    st.rerun()
 
-# --- FUNZIONE PDF ---
+# Funzione per caricare i dati (chiamata dai tasti nella tabella)
+def carica_prodotto(codice):
+    cursor.execute("SELECT * FROM prodotti WHERE codice=?", (codice,))
+    res = cursor.fetchone()
+    if res:
+        st.session_state.edit_data = {
+            "codice": res[0], "nome": res[1], "fornitore": res[2],
+            "acquisto": res[3], "rivendita": res[4], "pubblico": res[6], "qty": res[7]
+        }
+        st.session_state.form_iteration += 1
+
+# --- 4. FUNZIONE PDF ---
 def genera_pdf(titolo, campi_scelti):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -63,32 +73,23 @@ def genera_pdf(titolo, campi_scelti):
     c.save(); buffer.seek(0)
     return buffer
 
-# --- LOGICA DI CARICAMENTO DATI ---
-# Recuperiamo i dati correnti se siamo in modalità modifica
-prod_corrente = {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
-if st.session_state.editing_now:
-    cursor.execute("SELECT * FROM prodotti WHERE codice=?", (st.session_state.editing_now,))
-    res = cursor.fetchone()
-    if res:
-        prod_corrente = {"codice": res[0], "nome": res[1], "fornitore": res[2], "acquisto": res[3], "rivendita": res[4], "pubblico": res[6], "qty": res[7]}
-
-# --- SIDEBAR (SCHEDA PRODOTTO) ---
+# --- 5. SIDEBAR (SCHEDA PRODOTTO) ---
 st.sidebar.header("🛡️ SCHEDA PRODOTTO")
 iter = st.session_state.form_iteration
-is_edit = st.session_state.editing_now is not None
+d = st.session_state.edit_data if st.session_state.edit_data else {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
 
 with st.sidebar:
-    cod = st.text_input("Codice Prodotto", value=prod_corrente["codice"], disabled=is_edit, key=f"c_{iter}")
-    nom = st.text_input("Nome/Descrizione", value=prod_corrente["nome"], key=f"n_{iter}")
-    forn = st.text_input("Fornitore", value=prod_corrente["fornitore"], key=f"f_{iter}")
+    cod = st.text_input("Codice Prodotto", value=d["codice"], disabled=(st.session_state.edit_data is not None), key=f"c_{iter}")
+    nom = st.text_input("Nome/Descrizione", value=d["nome"], key=f"n_{iter}")
+    forn = st.text_input("Fornitore", value=d["fornitore"], key=f"f_{iter}")
     
     col1, col2 = st.columns(2)
-    acq = col1.number_input("Acquisto (€)", value=float(prod_corrente["acquisto"]), step=0.01, key=f"a_{iter}")
-    riv = col2.number_input("Rivendita (€)", value=float(prod_corrente["rivendita"]), step=0.01, key=f"r_{iter}")
-    pub = col1.number_input("Pubblico (€)", value=float(prod_corrente["pubblico"]), step=0.01, key=f"p_{iter}")
-    qta = col2.number_input("Q.tà", value=int(prod_corrente["qty"]), step=1, key=f"q_{iter}")
+    acq = col1.number_input("Acquisto (€)", value=float(d["acquisto"]), step=0.01, key=f"a_{iter}")
+    riv = col2.number_input("Rivendita (€)", value=float(d["rivendita"]), step=0.01, key=f"r_{iter}")
+    pub = col1.number_input("Pubblico (€)", value=float(d["pubblico"]), step=0.01, key=f"p_{iter}")
+    qta = col2.number_input("Q.tà", value=int(d["qty"]), step=1, key=f"q_{iter}")
 
-    st.write("---")
+    st.markdown("---")
     
     # AZIONI
     if st.button("➕ Inserisci Nuovo", use_container_width=True, type="primary"):
@@ -99,50 +100,54 @@ with st.sidebar:
                 conn.commit()
                 st.success("Inserito!")
                 reset_totale()
-            except: st.error("Errore: Codice già presente")
+                st.rerun()
+            except: st.error("Codice duplicato!")
 
-    if st.button("💾 Salva Modifiche", use_container_width=True, disabled=not is_edit):
+    if st.button("💾 Salva Modifiche", use_container_width=True, disabled=(st.session_state.edit_data is None)):
         iva = round(riv * 1.22, 2)
         cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
-                       (nom, forn, acq, riv, iva, pub, qta, st.session_state.editing_now))
+                       (nom, forn, acq, riv, iva, pub, qta, d["codice"]))
         conn.commit()
         st.info("Modificato!")
         reset_totale()
+        st.rerun()
 
-    if st.button("🗑️ Elimina", use_container_width=True, disabled=not is_edit):
-        cursor.execute("DELETE FROM prodotti WHERE codice=?", (st.session_state.editing_now,))
+    if st.button("🗑️ Elimina", use_container_width=True, disabled=(st.session_state.edit_data is None)):
+        cursor.execute("DELETE FROM prodotti WHERE codice=?", (d["codice"],))
         conn.commit()
         st.warning("Eliminato!")
         reset_totale()
+        st.rerun()
 
     if st.button("🧹 Svuota Campi", use_container_width=True):
         reset_totale()
+        st.rerun()
 
-# --- AREA PRINCIPALE ---
+# --- 6. AREA PRINCIPALE (TABELLA CON CLICK SULLA RIGA) ---
 st.header("🔍 Ricerca e Magazzino")
-search = st.text_input("Cerca per nome o codice...")
+search = st.text_input("Filtra per nome o codice...")
+
 query = "SELECT * FROM prodotti"
 if search:
     query += f" WHERE codice LIKE '%{search}%' OR nome LIKE '%{search}%'"
 df = pd.read_sql_query(query, conn)
 
 if not df.empty:
-    # Mostriamo la tabella
-    st.dataframe(df.rename(columns={
-        'codice': 'Codice', 'nome': 'Nome', 'fornitore': 'Fornitore',
-        'prezzo_acquisto': 'Acquisto', 'prezzo_rivendita': 'Rivendita',
-        'prezzo_rivendita_iva': 'Riv+IVA', 'prezzo_pubblico': 'Pubblico', 'quantita': 'Q.tà'
-    }), use_container_width=True, hide_index=True)
-
-    # SELEZIONE PRODOTTO (MOLTO PIÙ SEMPLICE)
-    sel = st.selectbox("Seleziona Prodotto per operazione", ["-- SCEGLI CODICE --"] + df['codice'].tolist())
-    if sel != "-- SCEGLI CODICE --":
-        if st.button("CARICA DATI NELLA SCHEDA"):
-            st.session_state.editing_now = sel
+    st.write("Clicca sulla matita 📝 per gestire il prodotto:")
+    
+    # Creiamo una riga per ogni prodotto
+    for index, row in df.iterrows():
+        c_btn, c_txt = st.columns([0.2, 5])
+        # Quando clicchi qui, carichiamo i dati sopra
+        if c_btn.button("📝", key=f"btn_{row['codice']}"):
+            carica_prodotto(row['codice'])
             st.rerun()
+            
+        # Visualizzazione simile a quella del PC ma leggibile
+        c_txt.markdown(f"**{row['codice']}** | {row['nome']} | Fornitore: {row['fornitore']} | Q.tà: **{row['quantita']}** | Pubblico: **{row['prezzo_pubblico']}€**")
+        st.divider()
 
-# --- PDF ---
-st.write("---")
+# --- 7. PDF ---
 st.header("🖨️ Stampa PDF")
 c1, c2 = st.columns([2, 1])
 with c1:
