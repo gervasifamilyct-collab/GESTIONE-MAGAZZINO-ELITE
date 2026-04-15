@@ -1,90 +1,125 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
-import os
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+import io
 
-# Configurazione Pagina
-st.set_page_config(page_title="Gestione Magazzino - Centri Elite", layout="wide")
+# --- LOGICA DATABASE ---
+def inizializza_db():
+    conn = sqlite3.connect("magazzino.db", check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS prodotti (
+            codice TEXT PRIMARY KEY,
+            nome TEXT,
+            fornitore TEXT,
+            prezzo_acquisto REAL,
+            prezzo_rivendita REAL,
+            prezzo_rivendita_iva REAL,
+            prezzo_pubblico REAL,
+            quantita INTEGER DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    return conn
 
-# File per non perdere i dati (Database locale)
-DATA_FILE = "magazzino_elite.csv"
+conn = inizializza_db()
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        return pd.read_csv(DATA_FILE)
-    return pd.DataFrame(columns=['Codice', 'Nome', 'Fornitore', 'Acquisto', 'Rivendita', 'Riv_iva', 'Pubblico', 'Qty'])
-
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False)
-
-# Inizializzazione sessione
-if 'df' not in st.session_state:
-    st.session_state.df = load_data()
-
-# --- FUNZIONE PER SVUOTARE I CAMPI ---
-def reset_campi():
-    st.session_state["codice_input"] = ""
-    st.session_state["nome_input"] = ""
-    st.session_state["fornitore_input"] = ""
-    st.session_state["acquisto_input"] = 0.0
-    st.session_state["rivendita_input"] = 0.0
-    st.session_state["pubblico_input"] = 0.0
-    st.session_state["qty_input"] = 0
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("SCHEDA PRODOTTO")
+# --- FUNZIONI PDF ---
+def genera_pdf(titolo, campi_scelti):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
     
-    # Usiamo le "key" per poter resettare i campi
-    codice = st.text_input("Codice Prodotto:", key="codice_input")
-    nome = st.text_input("Nome/Descrizione Prodotto:", key="nome_input")
-    fornitore = st.text_input("Fornitore:", key="fornitore_input")
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(50, height - 50, titolo.upper())
     
-    col1, col2 = st.columns(2)
-    with col1:
-        acquisto = st.number_input("Acquisto (€):", format="%.2f", key="acquisto_input")
-        pubblico = st.number_input("Pubblico (€):", format="%.2f", key="pubblico_input")
-    with col2:
-        rivendita = st.number_input("Rivendita (€):", format="%.2f", key="rivendita_input")
-        qty = st.number_input("Q.tà:", step=1, key="qty_input")
-
-    riv_iva = rivendita * 1.22
-    st.write(f"**Rivendita + IVA: {riv_iva:.2f} €**")
+    y = height - 100
+    x_pos = 50
+    larghezze = {"Codice": 60, "Nome": 180, "Fornitore": 80, "P. Acquisto": 60, "P. Rivendita": 60, "P. Pubblico": 60, "Quantità": 50}
     
-    st.markdown("---")
+    c.setFont("Helvetica-Bold", 10)
+    for campo in campi_scelti:
+        c.drawString(x_pos, y, campo)
+        x_pos += larghezze.get(campo, 70)
     
-    # TASTO INSERISCI
-    if st.button("✅ Inserisci Nuovo", use_container_width=True):
-        if codice and nome:
-            nuovo_prodotto = {
-                'Codice': codice, 'Nome': nome, 'Fornitore': fornitore,
-                'Acquisto': acquisto, 'Rivendita': rivendita, 
-                'Riv_iva': round(riv_iva, 2), 'Pubblico': pubblico, 'Qty': qty
-            }
-            st.session_state.df = pd.concat([st.session_state.df, pd.DataFrame([nuovo_prodotto])], ignore_index=True)
-            save_data(st.session_state.df)
+    c.line(50, y-5, width-50, y-5)
+    y -= 25
+    
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM prodotti")
+    for p in cursor.fetchall():
+        mappa = {"Codice": str(p[0]), "Nome": str(p[1]), "Fornitore": str(p[2]), "P. Acquisto": f"{p[3]}€", 
+                 "P. Rivendita": f"{p[4]}€", "P. Pubblico": f"{p[6]}€", "Quantità": str(p[7])}
+        x_pos = 50
+        c.setFont("Helvetica", 9)
+        for campo in campi_scelti:
+            c.drawString(x_pos, y, mappa[campo][:30])
+            x_pos += larghezze.get(campo, 70)
+        y -= 20
+        if y < 50:
+            c.showPage()
+            y = height - 50
             
-            # AZIONE DI RESET
-            reset_campi()
-            st.success("Prodotto aggiunto!")
-            st.rerun() # Ricarica la pagina con i campi puliti
-        else:
-            st.error("Inserisci almeno Codice e Nome!")
+    c.save()
+    buffer.seek(0)
+    return buffer
 
-# --- PARTE CENTRALE ---
-st.title("📦 GESTIONE MAGAZZINO - Centri Elite")
+# --- INTERFACCIA WEB ---
+st.set_page_config(page_title="Elite Estetica - Gestionale", layout="wide")
+st.title("📦 Elite Estetica - Gestionale Magazzino")
 
-# BARRA DI RICERCA (Richiesta!)
-cerca = st.text_input("🔍 Cerca prodotto per Nome o Codice...")
+menu = ["Visualizza/Ricerca", "Aggiungi Prodotto", "Stampa PDF"]
+scelta = st.sidebar.selectbox("Menu", menu)
 
-st.subheader("📊 Inventario Attuale")
+if scelta == "Visualizza/Ricerca":
+    st.subheader("Inventario Prodotti")
+    search = st.text_input("🔍 Cerca per nome o codice")
+    df = pd.read_sql_query("SELECT * FROM prodotti", conn)
+    
+    if search:
+        df = df[df['nome'].str.contains(search, case=False) | df['codice'].str.contains(search, case=False)]
+    
+    st.dataframe(df, use_container_width=True)
 
-# Filtro ricerca
-if cerca:
-    df_mostra = st.session_state.df[
-        st.session_state.df['Nome'].str.contains(cerca, case=False, na=False) | 
-        st.session_state.df['Codice'].str.contains(cerca, case=False, na=False)
-    ]
-else:
-    df_mostra = st.session_state.df
+    # Eliminazione
+    with st.expander("Azioni Rapide (Modifica/Elimina)"):
+        cod_mod = st.selectbox("Seleziona Codice Prodotto", df['codice'].tolist() if not df.empty else [])
+        if cod_mod:
+            if st.button("Elimina Prodotto", type="secondary"):
+                conn.execute("DELETE FROM prodotti WHERE codice=?", (cod_mod,))
+                conn.commit()
+                st.rerun()
 
-st.table(df_mostra)
+elif scelta == "Aggiungi Prodotto":
+    st.subheader("Inserimento Nuovo Prodotto")
+    with st.form("form_prodotto"):
+        col1, col2 = st.columns(2)
+        with col1:
+            c = st.text_input("Codice Prodotto")
+            n = st.text_input("Nome/Descrizione")
+            f = st.text_input("Fornitore")
+        with col2:
+            ac = st.number_input("Prezzo Acquisto (€)", min_value=0.0, step=0.01)
+            ri = st.number_input("Prezzo Rivendita (€)", min_value=0.0, step=0.01)
+            pu = st.number_input("Prezzo Pubblico (€)", min_value=0.0, step=0.01)
+            q = st.number_input("Quantità", min_value=0, step=1)
+        
+        if st.form_submit_button("Salva Prodotto"):
+            iva = round(ri * 1.22, 2)
+            try:
+                conn.execute('INSERT INTO prodotti VALUES (?,?,?,?,?,?,?,?)', (c, n, f, ac, ri, iva, pu, q))
+                conn.commit()
+                st.success("Prodotto aggiunto con successo!")
+            except:
+                st.error("Errore: Il codice esiste già.")
+
+elif scelta == "Stampa PDF":
+    st.subheader("Configurazione Report")
+    titolo = st.text_input("Titolo Report", "LISTINO PRODOTTI")
+    campi = st.multiselect("Campi da includere", ["Codice", "Nome", "Fornitore", "P. Acquisto", "P. Rivendita", "P. Pubblico", "Quantità"], default=["Nome", "P. Pubblico", "Quantità"])
+    
+    if st.button("Genera Anteprima PDF"):
+        pdf_file = genera_pdf(titolo, campi)
+        st.download_button(label="⬇️ Scarica Listino PDF", data=pdf_file, file_name=f"{titolo}.pdf", mime="application/pdf")
