@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 import io
 
-# --- INIZIALIZZAZIONE DATABASE ---
+# --- DATABASE ---
 def get_connection():
     conn = sqlite3.connect("magazzino.db", check_same_thread=False)
     return conn
@@ -22,7 +22,13 @@ cursor.execute('''
 conn.commit()
 
 # --- FUNZIONI DI SERVIZIO ---
-def genera_report_pdf(titolo, campi_scelti):
+def reset_campi():
+    st.session_state.form_data = {
+        "codice": "", "nome": "", "fornitore": "", 
+        "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0
+    }
+
+def genera_pdf(titolo, campi_scelti):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -61,17 +67,15 @@ def genera_report_pdf(titolo, campi_scelti):
 # --- INTERFACCIA ---
 st.set_page_config(page_title="Elite Estetica", layout="wide")
 
-# Stato dell'app per gestire la selezione (come il TreeviewSelect)
 if 'form_data' not in st.session_state:
-    st.session_state.form_data = {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
+    reset_campi()
 
 st.sidebar.header("🛡️ SCHEDA PRODOTTO")
 
-# Campi di Input (Sidebar)
 with st.sidebar:
-    # Se un prodotto è selezionato, il codice è disabilitato (come nel tuo programma)
     is_edit = st.session_state.form_data["codice"] != ""
     
+    # Input Campi
     cod = st.text_input("Codice Prodotto", value=st.session_state.form_data["codice"], disabled=is_edit)
     nom = st.text_input("Nome/Descrizione", value=st.session_state.form_data["nome"])
     forn = st.text_input("Fornitore", value=st.session_state.form_data["fornitore"])
@@ -82,42 +86,49 @@ with st.sidebar:
     pub = col_a.number_input("Pubblico (€)", value=float(st.session_state.form_data["pubblico"]), step=0.01)
     qta = col_b.number_input("Q.tà", value=int(st.session_state.form_data["qty"]), step=1)
 
-    # Pulsanti Azione
     st.markdown("---")
+    
+    # AZIONI
     if st.button("➕ Inserisci Nuovo", use_container_width=True, type="primary"):
         if cod and nom:
             iva = round(riv * 1.22, 2)
             try:
                 cursor.execute('INSERT INTO prodotti VALUES (?,?,?,?,?,?,?,?)', (cod, nom, forn, acq, riv, iva, pub, qta))
                 conn.commit()
-                st.success("Inserito!")
+                st.success("Prodotto Inserito!")
+                reset_campi()
                 st.rerun()
-            except: st.error("Errore: Codice duplicato")
+            except: st.error("Errore: Codice già esistente")
+        else: st.warning("Mancano Codice o Nome")
 
     if st.button("💾 Salva Modifiche", use_container_width=True):
-        iva = round(riv * 1.22, 2)
-        cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
-                       (nom, forn, acq, riv, iva, pub, qta, cod))
-        conn.commit()
-        st.info("Modificato!")
-        st.rerun()
+        if is_edit:
+            iva = round(riv * 1.22, 2)
+            cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
+                           (nom, forn, acq, riv, iva, pub, qta, cod))
+            conn.commit()
+            st.info("Modificato con successo!")
+            reset_campi()
+            st.rerun()
 
     if st.button("🗑️ Elimina", use_container_width=True):
-        cursor.execute("DELETE FROM prodotti WHERE codice=?", (cod,))
-        conn.commit()
-        st.session_state.form_data = {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
-        st.rerun()
+        if is_edit:
+            cursor.execute("DELETE FROM prodotti WHERE codice=?", (cod,))
+            conn.commit()
+            st.warning("Prodotto Eliminato")
+            reset_campi()
+            st.rerun()
 
     if st.button("🧹 Svuota Campi", use_container_width=True):
-        st.session_state.form_data = {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
+        reset_campi()
         st.rerun()
 
-# --- AREA PRINCIPALE (TABELLA E RICERCA) ---
+# --- AREA VISUALIZZAZIONE ---
 col_main, col_report = st.columns([3, 1])
 
 with col_main:
     st.subheader("🔍 Ricerca e Magazzino")
-    search = st.text_input("Filtra per nome o codice...")
+    search = st.text_input("Cerca per nome o codice...")
     
     query = "SELECT * FROM prodotti"
     if search:
@@ -125,24 +136,22 @@ with col_main:
     
     df = pd.read_sql_query(query, conn)
     
-    # Visualizzazione Tabella con Selezione (Simula il TreeviewSelect)
-    st.write("Clicca sul pulsante a sinistra della riga per caricare i dati nei campi:")
     for index, row in df.iterrows():
-        col_btn, col_txt = st.columns([0.2, 5])
-        if col_btn.button("📝", key=row['codice']):
+        c_btn, c_txt = st.columns([0.3, 5])
+        if c_btn.button("📝", key=f"btn_{row['codice']}"):
             st.session_state.form_data = {
                 "codice": row['codice'], "nome": row['nome'], "fornitore": row['fornitore'],
                 "acquisto": row['prezzo_acquisto'], "rivendita": row['prezzo_rivendita'],
                 "pubblico": row['prezzo_pubblico'], "qty": row['quantita']
             }
             st.rerun()
-        col_txt.text(f"{row['codice']} | {row['nome']} | {row['quantita']} pz | {row['prezzo_pubblico']}€")
+        c_txt.text(f"{row['codice']} | {row['nome']} | {row['quantita']}pz | {row['prezzo_pubblico']}€")
 
 with col_report:
-    st.subheader("🖨️ Stampa PDF")
-    titolo_rep = st.text_input("Titolo", "LISTINO ELITE")
-    campi_rep = st.multiselect("Campi", ["Codice", "Nome", "Fornitore", "P. Acquisto", "P. Rivendita", "P. Pubblico", "Quantità"], default=["Codice", "Nome", "P. Pubblico"])
+    st.subheader("🖨️ PDF")
+    tit_pdf = st.text_input("Titolo PDF", "LISTINO ELITE")
+    campi_pdf = st.multiselect("Colonne", ["Codice", "Nome", "Fornitore", "P. Acquisto", "P. Rivendita", "P. Pubblico", "Quantità"], default=["Codice", "Nome", "P. Pubblico"])
     
-    if st.button("Genera PDF"):
-        pdf = genera_report_pdf(titolo_rep, campi_rep)
-        st.download_button("Scarica PDF", data=pdf, file_name="listino.pdf", mime="application/pdf")
+    if st.button("Genera Listino"):
+        pdf_out = genera_pdf(tit_pdf, campi_pdf)
+        st.download_button("Scarica PDF", data=pdf_out, file_name="listino.pdf")
