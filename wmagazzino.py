@@ -70,7 +70,7 @@ def genera_pdf(titolo, campi_scelti):
     c.save(); buffer.seek(0)
     return buffer
 
-# --- SIDEBAR ---
+# --- SIDEBAR (SCHEDA PRODOTTO) ---
 st.sidebar.header("🛡️ SCHEDA PRODOTTO")
 iter = st.session_state.form_iteration
 d = st.session_state.edit_data if st.session_state.edit_data else {"codice": "", "nome": "", "fornitore": "", "acquisto": 0.0, "rivendita": 0.0, "pubblico": 0.0, "qty": 0}
@@ -79,12 +79,14 @@ with st.sidebar:
     cod = st.text_input("Codice Prodotto", value=d["codice"], disabled=(st.session_state.edit_data is not None), key=f"c_{iter}")
     nom = st.text_input("Nome/Descrizione", value=d["nome"], key=f"n_{iter}")
     forn = st.text_input("Fornitore", value=d["fornitore"], key=f"f_{iter}")
+    
     col1, col2 = st.columns(2)
     acq = col1.number_input("Acquisto (€)", value=float(d["acquisto"]), step=0.01, key=f"a_{iter}")
     riv = col2.number_input("Rivendita (€)", value=float(d["rivendita"]), step=0.01, key=f"r_{iter}")
     pub = col1.number_input("Pubblico (€)", value=float(d["pubblico"]), step=0.01, key=f"p_{iter}")
     qta = col2.number_input("Q.tà", value=int(d["qty"]), step=1, key=f"q_{iter}")
-    st.write("---")
+
+    st.markdown("---")
     
     if st.button("➕ Inserisci Nuovo", use_container_width=True, type="primary"):
         if cod and nom:
@@ -92,49 +94,49 @@ with st.sidebar:
             try:
                 cursor.execute('INSERT INTO prodotti VALUES (?,?,?,?,?,?,?,?)', (cod, nom, forn, acq, riv, iva, pub, qta))
                 conn.commit(); st.success("Inserito!"); reset_totale(); st.rerun()
-            except: st.error("Codice duplicato!")
-    
+            except: st.error("Errore: Codice già presente!")
+
     if st.button("💾 Salva Modifiche", use_container_width=True, disabled=(st.session_state.edit_data is None)):
         iva = round(riv * 1.22, 2)
         cursor.execute('UPDATE prodotti SET nome=?, fornitore=?, prezzo_acquisto=?, prezzo_rivendita=?, prezzo_rivendita_iva=?, prezzo_pubblico=?, quantita=? WHERE codice=?', 
                        (nom, forn, acq, riv, iva, pub, qta, d["codice"]))
         conn.commit(); st.info("Modificato!"); reset_totale(); st.rerun()
 
-    if st.button("🗑️ Elimina", use_container_width=True, disabled=(st.session_state.edit_data is None)):
+    if st.button("🗑️ Elimina Prodotto", use_container_width=True, disabled=(st.session_state.edit_data is None)):
         cursor.execute("DELETE FROM prodotti WHERE codice=?", (d["codice"],))
         conn.commit(); st.warning("Eliminato!"); reset_totale(); st.rerun()
 
     if st.button("🧹 Svuota Campi", use_container_width=True):
         reset_totale(); st.rerun()
 
-# --- AREA PRINCIPALE ---
-st.header("🔍 Ricerca e Magazzino")
-search = st.text_input("Filtra per nome o codice...")
+# --- AREA PRINCIPALE (ELENCO PRODOTTI CLICCABILE) ---
+st.header("🔍 Elenco Magazzino")
+st.write("Clicca sulla riga del prodotto per caricarlo e modificarlo:")
 
+search = st.text_input("Cerca per nome o codice...")
 query = "SELECT * FROM prodotti"
 if search:
     query += f" WHERE codice LIKE '%{search}%' OR nome LIKE '%{search}%'"
 df = pd.read_sql_query(query, conn)
 
-if not df.empty:
-    # 1. TABELLA BELLA E ORDINATA (Sola lettura)
-    df_clean = df.rename(columns={
-        'codice': 'Codice', 'nome': 'Nome', 'fornitore': 'Fornitore',
-        'prezzo_acquisto': 'Acquisto', 'prezzo_rivendita': 'Rivendita',
-        'prezzo_rivendita_iva': 'Riv+IVA', 'prezzo_pubblico': 'Pubblico', 'quantita': 'Q.tà'
-    })
-    st.table(df_clean) # st.table è più leggibile e ferma di st.dataframe
+# Intestazione della Tabella "Finta"
+st.markdown("""
+<div style='background-color: #f0f2f6; padding: 10px; border-radius: 5px; font-weight: bold; display: flex;'>
+    <div style='flex: 1;'>Codice</div>
+    <div style='flex: 2;'>Nome Prodotto</div>
+    <div style='flex: 1;'>Fornitore</div>
+    <div style='flex: 0.5;'>Q.tà</div>
+    <div style='flex: 1;'>Pubblico</div>
+</div>
+""", unsafe_allow_html=True)
 
-    # 2. SELETTORE DI RIGA (Semplice e veloce)
-    st.write("### 📝 Gestione rapida")
-    col_sel, col_btn = st.columns([3, 1])
-    prodotto_da_caricare = col_sel.selectbox("Seleziona il codice del prodotto che vuoi modificare o eliminare:", 
-                                            ["-- SELEZIONA --"] + df['codice'].tolist())
-    
-    if col_btn.button("🔄 CARICA NELLA SCHEDA", use_container_width=True):
-        if prodotto_da_caricare != "-- SELEZIONA --":
-            carica_prodotto(prodotto_da_caricare)
-            st.rerun()
+# Generazione delle righe cliccabili
+for index, row in df.iterrows():
+    label = f"{row['codice']} | {row['nome'][:30]}... | {row['quantita']} pz | {row['prezzo_pubblico']}€"
+    # Creiamo un pulsante che sembra una riga di tabella
+    if st.button(f"📄 {row['codice']} ➔ {row['nome']}", key=f"row_{row['codice']}", use_container_width=True):
+        carica_prodotto(row['codice'])
+        st.rerun()
 
 # --- PDF ---
 st.divider()
